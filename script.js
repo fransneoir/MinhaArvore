@@ -13,9 +13,7 @@ const GEN_VERTICAL_GAP = 250;
 const SIBLING_HORIZONTAL_GAP = 270;
 const SPOUSE_HORIZONTAL_GAP = 245;
 
-// ============================================================================
-// GERADOR DE AVATARES ILUSTRADOS EM SVG (DATA URI)
-// ============================================================================
+// Avatares SVG embutidos em Data URI (sem dependências externas quebráveis)
 function createIllustratedAvatar(bgColor, hairColor, skinColor, style = 'woman') {
   const hairPath = style === 'woman'
     ? `<path d="M24 52c0-20 12-32 26-32s26 12 26 32v18H24V52z" fill="${hairColor}"/>`
@@ -49,9 +47,7 @@ const PRESET_AVATARS = [
   { label: 'Senhor', url: createIllustratedAvatar('#dfe6dc', '#e5e7eb', '#e0ac82', 'elder') },
 ];
 
-// ============================================================================
-// ESTADO GLOBAL DA APLICAÇÃO
-// ============================================================================
+// Estado Principal da Aplicação
 let appState = {
   visualStyle: 'organic', // 'organic' | 'classic'
   rootId: 'person_center',
@@ -59,6 +55,7 @@ let appState = {
   positions: {}
 };
 
+// Estado de Pan & Zoom
 let viewTransform = {
   x: 0,
   y: 0,
@@ -69,6 +66,8 @@ let isPanning = false;
 let panStart = { x: 0, y: 0 };
 let editingPersonId = null;
 let pendingRelationContext = null;
+let modalRelationMode = 'new'; // 'new' | 'existing'
+let selectedExistingPersonId = null;
 let toastTimer = null;
 
 // ============================================================================
@@ -151,7 +150,7 @@ function toggleDarkMode() {
 }
 
 // ============================================================================
-// INICIALIZAÇÃO E PERSISTÊNCIA (LOCALSTORAGE)
+// INICIALIZAÇÃO E PERSISTÊNCIA
 // ============================================================================
 function initApp() {
   if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
@@ -243,7 +242,7 @@ function closeConfirmModal() {
 }
 
 // ============================================================================
-// EXPORTAR E IMPORTAR ARQUIVOS JSON
+// EXPORTAR E IMPORTAR JSON
 // ============================================================================
 function exportJSON() {
   try {
@@ -293,7 +292,7 @@ function importJSON(event) {
 }
 
 // ============================================================================
-// EXEMPLO DE FAMÍLIA COM 4 GERAÇÕES
+// EXEMPLO DE FAMÍLIA COM VÁRIAS GERAÇÕES
 // ============================================================================
 function loadSampleFamily() {
   appState.rootId = 'p_ana';
@@ -744,36 +743,39 @@ function renderTree() {
       );
     });
 
-    // D) Conexões com Irmãos
+    // D) Conexões com Irmãos (incluindo meio-irmãos com mães/pais diferentes)
     (person.siblings || []).forEach(sibId => {
       const sib = appState.people[sibId];
       const posSib = positions[sibId];
       if (!sib || !posSib) return;
 
-      const shareParent = (person.parents || []).some(pid => (sib.parents || []).includes(pid));
-      if (shareParent) return;
-
       const pairKey = [person.id, sibId].sort().join('--sibling--');
       if (drawnPairs.has(pairKey)) return;
       drawnPairs.add(pairKey);
 
+      const shareParent = (person.parents || []).some(pid => (sib.parents || []).includes(pid));
       const x1 = posA.x + CARD_WIDTH / 2;
       const y1 = posA.y;
       const x2 = posSib.x + CARD_WIDTH / 2;
       const y2 = posSib.y;
-      const archY = Math.min(y1, y2) - 42;
+      const archY = Math.min(y1, y2) - (shareParent ? 28 : 42);
 
-      const path = createSvgElement('path', {
-        d: `M ${x1} ${y1} C ${x1} ${archY}, ${x2} ${archY}, ${x2} ${y2}`,
-        fill: 'none',
-        stroke: isOrganic ? (isDark ? '#6e9e81' : '#5c8a6e') : (isDark ? '#78716c' : '#a8a29e'),
-        'stroke-width': isOrganic ? '3' : '2',
-        'stroke-linecap': 'round'
-      });
-      connectionsLayer.appendChild(path);
+      // Se já compartilham pai/mãe, os galhos parentais já os conectam;
+      // caso contrário (meio-irmãos sem pais em comum cadastrados ou pais diferentes), desenha o arco fraterno
+      if (!shareParent) {
+        const path = createSvgElement('path', {
+          d: `M ${x1} ${y1} C ${x1} ${archY}, ${x2} ${archY}, ${x2} ${y2}`,
+          fill: 'none',
+          stroke: isOrganic ? (isDark ? '#6e9e81' : '#5c8a6e') : (isDark ? '#78716c' : '#a8a29e'),
+          'stroke-width': isOrganic ? '3' : '2',
+          'stroke-dasharray': '5 3',
+          'stroke-linecap': 'round'
+        });
+        connectionsLayer.appendChild(path);
 
-      if (isOrganic) {
-        addDecorativeLeaf(leavesLayer, (x1 + x2) / 2, archY + 10, 15, isDark);
+        if (isOrganic) {
+          addDecorativeLeaf(leavesLayer, (x1 + x2) / 2, archY + 10, 15, isDark);
+        }
       }
     });
   });
@@ -997,7 +999,7 @@ function createPersonCardElement(person, pos) {
 }
 
 // ============================================================================
-// MODAL: EDITAR OU ADICIONAR NOVO PARENTE
+// MODAL: EDITAR OU ADICIONAR PARENTE (NOVO OU EXISTENTE)
 // ============================================================================
 function renderAvatarPresets() {
   const container = document.getElementById('avatar-presets');
@@ -1069,7 +1071,7 @@ function showPersonModal() {
   modal.classList.add('flex');
   setTimeout(() => {
     const nameInput = document.getElementById('edit-name');
-    if (nameInput) nameInput.focus();
+    if (nameInput && modalRelationMode === 'new') nameInput.focus();
   }, 50);
 }
 
@@ -1079,6 +1081,156 @@ function closePersonModal() {
   modal.classList.remove('flex');
   editingPersonId = null;
   pendingRelationContext = null;
+  modalRelationMode = 'new';
+  selectedExistingPersonId = null;
+}
+
+function switchModalMode(mode) {
+  modalRelationMode = mode === 'existing' ? 'existing' : 'new';
+
+  const tabNew = document.getElementById('tab-mode-new');
+  const tabExisting = document.getElementById('tab-mode-existing');
+  const newPanel = document.getElementById('new-person-panel');
+  const existingPanel = document.getElementById('existing-person-panel');
+  const saveBtn = document.querySelector('#person-modal button[onclick="savePersonModal()"]');
+
+  const activeCls = ['bg-white', 'dark:bg-stone-900', 'text-folha-800', 'dark:text-folha-200', 'shadow-sm'];
+  const inactiveCls = ['text-stone-600', 'dark:text-stone-400', 'hover:text-stone-900'];
+
+  if (modalRelationMode === 'new') {
+    tabNew.classList.add(...activeCls);
+    tabNew.classList.remove(...inactiveCls);
+    tabExisting.classList.remove(...activeCls);
+    tabExisting.classList.add(...inactiveCls);
+
+    newPanel.classList.remove('hidden');
+    existingPanel.classList.add('hidden');
+    if (saveBtn) saveBtn.textContent = 'Salvar Alterações';
+  } else {
+    tabExisting.classList.add(...activeCls);
+    tabExisting.classList.remove(...inactiveCls);
+    tabNew.classList.remove(...activeCls);
+    tabNew.classList.add(...inactiveCls);
+
+    newPanel.classList.add('hidden');
+    existingPanel.classList.remove('hidden');
+    if (saveBtn) saveBtn.textContent = 'Vincular Familiar';
+    renderExistingPeopleList();
+  }
+}
+
+function populateSiblingParentOptions(sourcePerson) {
+  const box = document.getElementById('sibling-parents-box');
+  const select = document.getElementById('sibling-parent-share');
+  const sourceNameSpan = document.getElementById('sibling-source-name');
+
+  if (!box || !select) return;
+
+  sourceNameSpan.textContent = sourcePerson.name;
+  select.innerHTML = '';
+
+  const parents = (sourcePerson.parents || [])
+    .map(pid => appState.people[pid])
+    .filter(Boolean);
+
+  if (parents.length === 0) {
+    select.innerHTML = `
+      <option value="none">Nenhum pai/mãe cadastrado ainda (criar apenas vínculo de irmãos)</option>
+    `;
+  } else if (parents.length === 1) {
+    const p1 = parents[0];
+    select.innerHTML = `
+      <option value="parent_${p1.id}">Compartilhar ${escapeHtml(p1.name)} (${escapeHtml(p1.role || 'Pai/Mãe')}) — permite adicionar outra mãe/pai depois</option>
+      <option value="none">Pais diferentes (apenas vínculo de irmãos)</option>
+    `;
+  } else {
+    const p1 = parents[0];
+    const p2 = parents[1];
+    select.innerHTML = `
+      <option value="both">Ambos: ${escapeHtml(p1.name)} e ${escapeHtml(p2.name)} (Irmãos completos)</option>
+      <option value="parent_${p1.id}">Apenas ${escapeHtml(p1.name)} (Meio-irmão — outra mãe/pai)</option>
+      <option value="parent_${p2.id}">Apenas ${escapeHtml(p2.name)} (Meio-irmão — outro pai/mãe)</option>
+      <option value="none">Nenhum deles (Pais totalmente diferentes)</option>
+    `;
+  }
+
+  box.classList.remove('hidden');
+}
+
+function renderExistingPeopleList(filterText = '') {
+  const listEl = document.getElementById('existing-people-list');
+  if (!listEl || !pendingRelationContext) return;
+
+  const { sourceId, relationType } = pendingRelationContext;
+  const source = appState.people[sourceId];
+  const query = filterText.trim().toLowerCase();
+
+  const alreadyLinked = new Set([
+    sourceId,
+    ...(relationType === 'parent' ? (source.parents || []) : []),
+    ...(relationType === 'spouse' ? (source.spouses || []) : []),
+    ...(relationType === 'child' ? (source.children || []) : []),
+    ...(relationType === 'sibling' ? (source.siblings || []) : [])
+  ]);
+
+  const candidates = Object.values(appState.people).filter(p => {
+    if (alreadyLinked.has(p.id)) return false;
+    if (!query) return true;
+    return (p.name || '').toLowerCase().includes(query) ||
+           (p.role || '').toLowerCase().includes(query);
+  });
+
+  if (candidates.length === 0) {
+    listEl.innerHTML = `
+      <div class="text-center py-6 px-4 rounded-2xl border border-dashed border-stone-200 dark:border-stone-700 text-xs text-stone-500 dark:text-stone-400">
+        Nenhuma outra pessoa disponível para vincular com esse filtro. Use a aba <strong>"+ Criar Nova Pessoa"</strong>.
+      </div>
+    `;
+    selectedExistingPersonId = null;
+    return;
+  }
+
+  if (!selectedExistingPersonId || !candidates.some(c => c.id === selectedExistingPersonId)) {
+    selectedExistingPersonId = candidates[0].id;
+  }
+
+  listEl.innerHTML = candidates.map(person => {
+    const isSelected = person.id === selectedExistingPersonId;
+    return `
+      <button type="button" onclick="selectExistingPerson('${person.id}')"
+        class="w-full text-left flex items-center gap-3 p-2.5 rounded-2xl border-2 transition ${
+          isSelected
+            ? 'border-folha-600 bg-folha-50/70 dark:bg-folha-950/40 dark:border-folha-500'
+            : 'border-stone-200/80 dark:border-stone-700/80 hover:border-folha-300 bg-white dark:bg-stone-900'
+        }">
+        <img src="${person.photo || PRESET_AVATARS[0].url}" alt="${escapeHtml(person.name)}"
+          class="w-10 h-10 rounded-full object-cover border border-stone-300 dark:border-stone-600 shrink-0" />
+        <div class="flex-1 min-w-0">
+          <p class="text-xs font-bold text-stone-900 dark:text-stone-100 truncate">${escapeHtml(person.name)}</p>
+          <p class="text-[11px] text-stone-500 dark:text-stone-400 truncate">
+            ${escapeHtml(person.role || 'Familiar')} ${person.birth ? `• ${escapeHtml(person.birth)}` : ''}
+          </p>
+        </div>
+        <span class="w-5 h-5 rounded-full flex items-center justify-center border ${
+          isSelected
+            ? 'border-folha-600 bg-folha-600 text-white'
+            : 'border-stone-300 dark:border-stone-600'
+        }">
+          ${isSelected ? '✓' : ''}
+        </span>
+      </button>
+    `;
+  }).join('');
+}
+
+function filterExistingPeopleList(val) {
+  renderExistingPeopleList(val);
+}
+
+function selectExistingPerson(personId) {
+  selectedExistingPersonId = personId;
+  const searchVal = document.getElementById('existing-person-search')?.value || '';
+  renderExistingPeopleList(searchVal);
 }
 
 function openEditPersonModal(personId) {
@@ -1087,6 +1239,11 @@ function openEditPersonModal(personId) {
 
   editingPersonId = personId;
   pendingRelationContext = null;
+
+  document.getElementById('modal-mode-tabs').classList.add('hidden');
+  document.getElementById('modal-mode-tabs').classList.remove('grid');
+  document.getElementById('sibling-parents-box').classList.add('hidden');
+  switchModalMode('new');
 
   document.getElementById('modal-title').textContent = 'Editar Familiar';
   document.getElementById('modal-subtitle').textContent = 'Atualize a foto, datas ou notas deste membro da família';
@@ -1117,6 +1274,26 @@ function openAddRelativeModal(sourceId, relationType) {
 
   editingPersonId = null;
   pendingRelationContext = { sourceId, relationType };
+  selectedExistingPersonId = null;
+
+  const modeTabs = document.getElementById('modal-mode-tabs');
+  if (Object.keys(appState.people).length > 1) {
+    modeTabs.classList.remove('hidden');
+    modeTabs.classList.add('grid');
+  } else {
+    modeTabs.classList.add('hidden');
+    modeTabs.classList.remove('grid');
+  }
+
+  document.getElementById('existing-person-search').value = '';
+  switchModalMode('new');
+
+  const siblingBox = document.getElementById('sibling-parents-box');
+  if (relationType === 'sibling') {
+    populateSiblingParentOptions(sourcePerson);
+  } else {
+    siblingBox.classList.add('hidden');
+  }
 
   const labels = {
     parent: { title: `Adicionar Pai ou Mãe de ${sourcePerson.name}`, defaultRole: 'Pai / Mãe', accent: 'madeira', avatar: PRESET_AVATARS[4].url },
@@ -1127,7 +1304,7 @@ function openAddRelativeModal(sourceId, relationType) {
 
   const info = labels[relationType];
   document.getElementById('modal-title').textContent = info.title;
-  document.getElementById('modal-subtitle').textContent = 'Preencha os dados para criar um novo ramo na árvore';
+  document.getElementById('modal-subtitle').textContent = 'Crie um novo familiar ou vincule alguém que já está na árvore';
 
   document.getElementById('edit-name').value = '';
   document.getElementById('edit-role').value = info.defaultRole;
@@ -1143,32 +1320,99 @@ function openAddRelativeModal(sourceId, relationType) {
   showPersonModal();
 }
 
-function savePersonModal() {
-  const nameInput = document.getElementById('edit-name').value.trim();
-  const name = nameInput || 'Familiar sem nome';
-  const role = document.getElementById('edit-role').value.trim() || 'Familiar';
-  const gender = document.getElementById('edit-gender').value.trim();
-  const birth = document.getElementById('edit-birth').value.trim();
-  const death = document.getElementById('edit-death').value.trim();
-  const notes = document.getElementById('edit-notes').value.trim();
-  const accent = document.getElementById('person-modal').dataset.pendingAccent || 'folha';
-  const photo = document.getElementById('edit-photo-preview').src;
+function linkRelativeToSource(source, targetPerson, relationType) {
+  const sourceId = source.id;
+  const targetId = targetPerson.id;
 
+  // Liga APENAS a pessoa selecionada (source) ao familiar (targetPerson),
+  // sem criar vínculos automáticos com outros cônjuges ou pais.
+  if (relationType === 'parent') {
+    targetPerson.children = targetPerson.children || [];
+    if (!targetPerson.children.includes(sourceId)) targetPerson.children.push(sourceId);
+
+    source.parents = source.parents || [];
+    if (!source.parents.includes(targetId)) source.parents.push(targetId);
+  } else if (relationType === 'spouse') {
+    targetPerson.spouses = targetPerson.spouses || [];
+    if (!targetPerson.spouses.includes(sourceId)) targetPerson.spouses.push(sourceId);
+
+    source.spouses = source.spouses || [];
+    if (!source.spouses.includes(targetId)) source.spouses.push(targetId);
+  } else if (relationType === 'child') {
+    targetPerson.parents = targetPerson.parents || [];
+    if (!targetPerson.parents.includes(sourceId)) targetPerson.parents.push(sourceId);
+
+    source.children = source.children || [];
+    if (!source.children.includes(targetId)) source.children.push(targetId);
+  } else if (relationType === 'sibling') {
+    targetPerson.siblings = targetPerson.siblings || [];
+    if (!targetPerson.siblings.includes(sourceId)) targetPerson.siblings.push(sourceId);
+
+    source.siblings = source.siblings || [];
+    if (!source.siblings.includes(targetId)) source.siblings.push(targetId);
+  }
+}
+
+function savePersonModal() {
+  // Caso 1: Editando pessoa existente
   if (editingPersonId && appState.people[editingPersonId]) {
+    const nameInput = document.getElementById('edit-name').value.trim();
     const p = appState.people[editingPersonId];
-    p.name = name;
-    p.role = role;
-    p.gender = gender;
-    p.birth = birth;
-    p.death = death;
-    p.notes = notes;
-    p.accent = accent;
-    p.photo = photo;
+    p.name = nameInput || 'Familiar sem nome';
+    p.role = document.getElementById('edit-role').value.trim() || 'Familiar';
+    p.gender = document.getElementById('edit-gender').value.trim();
+    p.birth = document.getElementById('edit-birth').value.trim();
+    p.death = document.getElementById('edit-death').value.trim();
+    p.notes = document.getElementById('edit-notes').value.trim();
+    p.accent = document.getElementById('person-modal').dataset.pendingAccent || 'folha';
+    p.photo = document.getElementById('edit-photo-preview').src;
+
+    saveToStorage();
+    closePersonModal();
+    renderTree();
     showToast('Dados atualizados com sucesso!');
-  } else if (pendingRelationContext) {
+    return;
+  }
+
+  // Caso 2: Adicionando parente a uma pessoa existente
+  if (pendingRelationContext) {
     const { sourceId, relationType } = pendingRelationContext;
     const source = appState.people[sourceId];
     if (!source) return;
+
+    // Subcaso 2A: Vincular uma pessoa JÁ EXISTENTE na árvore
+    if (modalRelationMode === 'existing') {
+      if (!selectedExistingPersonId || !appState.people[selectedExistingPersonId]) {
+        showToast('Selecione uma pessoa existente na lista.');
+        return;
+      }
+
+      const existingTarget = appState.people[selectedExistingPersonId];
+      if (relationType === 'parent') existingTarget.generation = (source.generation || 0) - 1;
+      if (relationType === 'child') existingTarget.generation = (source.generation || 0) + 1;
+      if (relationType === 'sibling' || relationType === 'spouse') {
+        existingTarget.generation = source.generation || 0;
+      }
+
+      linkRelativeToSource(source, existingTarget, relationType);
+
+      saveToStorage();
+      closePersonModal();
+      renderTree();
+      showToast(`${existingTarget.name} vinculado(a) com sucesso!`);
+      return;
+    }
+
+    // Subcaso 2B: Criar uma NOVA pessoa e vincular
+    const nameInput = document.getElementById('edit-name').value.trim();
+    const name = nameInput || 'Familiar sem nome';
+    const role = document.getElementById('edit-role').value.trim() || 'Familiar';
+    const gender = document.getElementById('edit-gender').value.trim();
+    const birth = document.getElementById('edit-birth').value.trim();
+    const death = document.getElementById('edit-death').value.trim();
+    const notes = document.getElementById('edit-notes').value.trim();
+    const accent = document.getElementById('person-modal').dataset.pendingAccent || 'folha';
+    const photo = document.getElementById('edit-photo-preview').src;
 
     const newId = 'person_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
     let newGen = source.generation || 0;
@@ -1193,68 +1437,14 @@ function savePersonModal() {
       siblings: []
     };
 
-    if (relationType === 'parent') {
-      newPerson.children.push(sourceId);
-      source.parents = source.parents || [];
-      source.parents.push(newId);
-
-      if (source.parents.length === 2) {
-        const existingParentId = source.parents[0];
-        const existingParent = appState.people[existingParentId];
-        if (existingParent && existingParentId !== newId) {
-          existingParent.spouses = existingParent.spouses || [];
-          if (!existingParent.spouses.includes(newId)) existingParent.spouses.push(newId);
-          if (!newPerson.spouses.includes(existingParentId)) newPerson.spouses.push(existingParentId);
-        }
-      }
-    } else if (relationType === 'spouse') {
-      newPerson.spouses.push(sourceId);
-      source.spouses = source.spouses || [];
-      source.spouses.push(newId);
-
-      (source.children || []).forEach(cid => {
-        const child = appState.people[cid];
-        if (child && (child.parents || []).length < 2) {
-          child.parents.push(newId);
-          newPerson.children.push(cid);
-        }
-      });
-    } else if (relationType === 'child') {
-      newPerson.parents.push(sourceId);
-      source.children = source.children || [];
-      source.children.push(newId);
-
-      if ((source.spouses || []).length === 1) {
-        const spouseId = source.spouses[0];
-        const spouse = appState.people[spouseId];
-        if (spouse) {
-          newPerson.parents.push(spouseId);
-          spouse.children = spouse.children || [];
-          spouse.children.push(newId);
-        }
-      }
-    } else if (relationType === 'sibling') {
-      newPerson.siblings.push(sourceId);
-      source.siblings = source.siblings || [];
-      source.siblings.push(newId);
-
-      (source.parents || []).forEach(pid => {
-        const parent = appState.people[pid];
-        if (parent) {
-          newPerson.parents.push(pid);
-          parent.children = parent.children || [];
-          parent.children.push(newId);
-        }
-      });
-    }
-
     appState.people[newId] = newPerson;
+    linkRelativeToSource(source, newPerson, relationType);
+
+    saveToStorage();
+    closePersonModal();
+    renderTree();
     showToast(`${name} adicionado(a) à árvore!`);
   }
-
-  saveToStorage();
-  closePersonModal();
-  renderTree();
 }
 
 function deleteCurrentPerson() {
@@ -1349,7 +1539,6 @@ function setupPanAndZoom() {
   const viewport = document.getElementById('viewport');
   if (!viewport) return;
 
-  // Arraste com o Mouse (Pan)
   viewport.addEventListener('mousedown', (e) => {
     if (e.target.closest('.node-card')) return;
     isPanning = true;
@@ -1367,14 +1556,12 @@ function setupPanAndZoom() {
     isPanning = false;
   });
 
-  // Zoom com Roda do Mouse
   viewport.addEventListener('wheel', (e) => {
     e.preventDefault();
     const factor = e.deltaY < 0 ? 1.09 : 0.91;
     zoomAtPoint(e.clientX, e.clientY, factor);
   }, { passive: false });
 
-  // Gestos de Toque (Arraste e Pinça no Celular/Tablet)
   let lastTouchDist = null;
   viewport.addEventListener('touchstart', (e) => {
     if (e.target.closest('.node-card')) return;
@@ -1413,7 +1600,6 @@ function setupPanAndZoom() {
     lastTouchDist = null;
   });
 
-  // Fechar modais com ESC
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       closePersonModal();
@@ -1422,5 +1608,5 @@ function setupPanAndZoom() {
   });
 }
 
-// Iniciar aplicação assim que o DOM estiver carregado
+// Iniciar aplicação assim que o DOM estiver pronto
 window.addEventListener('DOMContentLoaded', initApp);
